@@ -1,6 +1,7 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
 import express from 'express';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
@@ -19,6 +20,9 @@ import {
   updateAppointment,
   updateUserProfile,
 } from './src/db/queries.ts';
+import { createPool, isDbConfigured } from './src/db/index.ts';
+import { seedDatabase } from './src/db/seed.ts';
+import { isSupabaseConfigured } from './src/lib/supabase.ts';
 import { AuthRequest, optionalAuth, requireAuth } from './src/middleware/auth.ts';
 
 dotenv.config();
@@ -35,14 +39,119 @@ const ai = new GoogleGenAI({
   },
 });
 
+async function autoMigrateDatabase() {
+  if (!isDbConfigured) return;
+  try {
+    const pool = createPool();
+    const schemaPath = path.resolve(__dirname, 'supabase', 'schema.sql');
+    if (fs.existsSync(schemaPath)) {
+      const sql = fs.readFileSync(schemaPath, 'utf-8');
+      await pool.query(sql);
+      console.log('✓ Supabase PostgreSQL schema auto-verified and applied.');
+    }
+    await seedDatabase();
+  } catch (err: any) {
+    console.warn('[Supabase Setup] Auto-migration notice:', err?.message || err);
+  }
+}
+
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
   app.use(express.json());
 
   app.get('/api/health', (_req, res) => {
-    res.json({ status: 'ok' });
+    res.json({
+      status: 'ok',
+      supabase: isSupabaseConfigured ? 'configured' : 'not_configured',
+      database: isDbConfigured ? 'configured' : 'not_configured',
+    });
+  });
+
+  // Supabase & Database Integration Status endpoint
+  app.get('/api/supabase/status', async (_req, res) => {
+    let dbStatus = 'disconnected';
+    let dbError: string | null = null;
+    let tables: string[] = [];
+
+    if (isDbConfigured) {
+      try {
+        const pool = createPool();
+        const testRes = await pool.query('SELECT NOW() AS current_time');
+        if (testRes.rows.length > 0) {
+          dbStatus = 'connected';
+          const tablesRes = await pool.query(`
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'public'
+          `);
+          tables = tablesRes.rows.map((r: any) => r.table_name);
+        }
+      } catch (err: any) {
+        dbStatus = 'error';
+        dbError = err?.message || 'Database connection error';
+      }
+    } else {
+      dbStatus = 'not_configured';
+    }
+
+    res.json({
+      supabaseApi: {
+        configured: isSupabaseConfigured,
+        hasUrl: Boolean(process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL),
+        hasKey: Boolean(
+          process.env.SUPABASE_SERVICE_ROLE_KEY ||
+            process.env.SUPABASE_ANON_KEY ||
+            process.env.VITE_SUPABASE_ANON_KEY
+        ),
+      },
+      postgresDatabase: {
+        configured: isDbConfigured,
+        status: dbStatus,
+        error: dbError,
+        hasConnectionString: Boolean(
+          process.env.DATABASE_URL ||
+            process.env.SUPABASE_DATABASE_URL ||
+            process.env.POSTGRES_URL
+        ),
+        existingTables: tables,
+      },
+      schemaReady:
+        tables.includes('users') &&
+        tables.includes('doctors') &&
+        tables.includes('specialties') &&
+        tables.includes('appointments'),
+    });
+  });
+
+  // Trigger Supabase schema migration and seeding
+  app.post('/api/supabase/setup', async (_req, res) => {
+    try {
+      if (!isDbConfigured) {
+        return res.status(400).json({
+          success: false,
+          error:
+            'DATABASE_URL is not configured in .env. Please configure your Supabase PostgreSQL connection string first.',
+        });
+      }
+      const pool = createPool();
+      const schemaPath = path.resolve(__dirname, 'supabase', 'schema.sql');
+      if (fs.existsSync(schemaPath)) {
+        const sql = fs.readFileSync(schemaPath, 'utf-8');
+        await pool.query(sql);
+      }
+      await seedDatabase();
+      res.json({
+        success: true,
+        message: 'Supabase schema verified and initial catalog seeded successfully.',
+      });
+    } catch (err: any) {
+      res.status(500).json({
+        success: false,
+        error: err?.message || 'Failed to apply Supabase schema or seed data.',
+      });
+    }
   });
 
   // Public catalog: Specialties & Doctors
@@ -365,6 +474,8 @@ ${catalogContext}`,
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  await autoMigrateDatabase();
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`MediSlot AI server listening on http://localhost:${PORT}`);

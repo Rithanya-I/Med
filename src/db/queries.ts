@@ -1,5 +1,5 @@
 import { and, asc, desc, eq } from 'drizzle-orm';
-import { db } from './index.ts';
+import { db, isDbConfigured } from './index.ts';
 import {
   appointments,
   doctors,
@@ -8,6 +8,17 @@ import {
   specialties,
   users,
 } from './schema.ts';
+import { INITIAL_DOCTORS, INITIAL_SPECIALTIES } from './seed.ts';
+
+const FALLBACK_SPECIALTIES = INITIAL_SPECIALTIES.map((s, idx) => ({
+  id: idx + 1,
+  ...s,
+}));
+
+const FALLBACK_DOCTORS = INITIAL_DOCTORS.map((d, idx) => ({
+  id: idx + 1,
+  ...d,
+}));
 
 export async function getOrCreateUser(
   uid: string,
@@ -134,36 +145,92 @@ export async function updateUserProfile(
 
 export async function listSpecialties() {
   try {
-    return await db.select().from(specialties).orderBy(desc(specialties.featured), asc(specialties.id));
+    const items = await db
+      .select()
+      .from(specialties)
+      .orderBy(desc(specialties.featured), asc(specialties.id));
+    if (items.length > 0) {
+      return items;
+    }
+    // If table exists but is empty, try seeding once if DB is configured
+    if (isDbConfigured) {
+      try {
+        await db.insert(specialties).values(INITIAL_SPECIALTIES);
+        return await db
+          .select()
+          .from(specialties)
+          .orderBy(desc(specialties.featured), asc(specialties.id));
+      } catch {
+        // Fall through to fallback
+      }
+    }
+    return FALLBACK_SPECIALTIES;
   } catch (error) {
-    console.error('Database query failed in listSpecialties:', error);
-    throw new Error('Failed to load specialties.', { cause: error });
+    console.warn(
+      '[Supabase DB] Could not query specialties table. Using fallback catalog until migrations are applied:',
+      (error as any)?.message || error
+    );
+    return FALLBACK_SPECIALTIES;
   }
 }
 
 export async function listDoctors(specialtySlug?: string) {
   try {
+    let items;
     if (specialtySlug && specialtySlug !== 'all') {
-      return await db
+      items = await db
         .select()
         .from(doctors)
         .where(eq(doctors.specialtySlug, specialtySlug))
         .orderBy(desc(doctors.isFeatured), asc(doctors.id));
+    } else {
+      items = await db
+        .select()
+        .from(doctors)
+        .orderBy(desc(doctors.isFeatured), asc(doctors.id));
     }
-    return await db.select().from(doctors).orderBy(desc(doctors.isFeatured), asc(doctors.id));
+
+    if (items.length > 0) {
+      return items;
+    }
+
+    // If table exists but is empty, try seeding once if DB is configured
+    if (isDbConfigured) {
+      try {
+        await db.insert(doctors).values(INITIAL_DOCTORS);
+        return await listDoctors(specialtySlug);
+      } catch {
+        // Fall through to fallback
+      }
+    }
+
+    if (specialtySlug && specialtySlug !== 'all') {
+      return FALLBACK_DOCTORS.filter((d) => d.specialtySlug === specialtySlug);
+    }
+    return FALLBACK_DOCTORS;
   } catch (error) {
-    console.error('Database query failed in listDoctors:', error);
-    throw new Error('Failed to load doctors.', { cause: error });
+    console.warn(
+      '[Supabase DB] Could not query doctors table. Using fallback catalog until migrations are applied:',
+      (error as any)?.message || error
+    );
+    if (specialtySlug && specialtySlug !== 'all') {
+      return FALLBACK_DOCTORS.filter((d) => d.specialtySlug === specialtySlug);
+    }
+    return FALLBACK_DOCTORS;
   }
 }
 
 export async function getDoctorById(doctorId: number) {
   try {
     const rows = await db.select().from(doctors).where(eq(doctors.id, doctorId));
-    return rows[0] || null;
+    if (rows[0]) return rows[0];
+    return FALLBACK_DOCTORS.find((d) => d.id === doctorId) || null;
   } catch (error) {
-    console.error('Database query failed in getDoctorById:', error);
-    throw new Error('Failed to load doctor profile.', { cause: error });
+    console.warn(
+      '[Supabase DB] Could not query doctor by ID from database:',
+      (error as any)?.message || error
+    );
+    return FALLBACK_DOCTORS.find((d) => d.id === doctorId) || null;
   }
 }
 
