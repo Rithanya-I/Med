@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "framework": "vite",
   "installCommand": "npm install --legacy-peer-deps",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
@@ -9,7 +9,7 @@
       "destination": "/api"
     },
     {
-      "source": "/(.*)",
+      "source": "/((?!assets/|favicon\\.ico|.*\\..*).*)",
       "destination": "/index.html"
     }
   ]

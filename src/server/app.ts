@@ -1,6 +1,6 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
-import express, { Express } from 'express';
+import express, { Express, Router } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -165,8 +165,24 @@ export function createExpressApp(): Express {
   const app = express();
   app.use(express.json());
 
+  // CORS support
+  app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.header(
+      'Access-Control-Allow-Headers',
+      'Origin, X-Requested-With, Content-Type, Accept, Authorization'
+    );
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(200);
+    }
+    next();
+  });
+
+  const apiRouter = Router();
+
   // Health check
-  app.get('/api/health', (_req, res) => {
+  apiRouter.get('/health', (_req, res) => {
     res.json({
       status: 'ok',
       supabase: isSupabaseConfigured ? 'configured' : 'not_configured',
@@ -175,7 +191,7 @@ export function createExpressApp(): Express {
   });
 
   // Supabase & Database Integration Status endpoint
-  app.get('/api/supabase/status', async (_req, res) => {
+  apiRouter.get('/supabase/status', async (_req, res) => {
     let dbStatus = 'disconnected';
     let dbError: string | null = null;
     let tables: string[] = [];
@@ -231,7 +247,7 @@ export function createExpressApp(): Express {
   });
 
   // Trigger Supabase schema migration and seeding
-  app.post('/api/supabase/setup', async (_req, res) => {
+  apiRouter.post('/supabase/setup', async (_req, res) => {
     try {
       if (!isDbConfigured) {
         return res.status(400).json({
@@ -260,7 +276,7 @@ export function createExpressApp(): Express {
   });
 
   // Public catalog: Specialties & Doctors
-  app.get('/api/specialties', async (_req, res) => {
+  apiRouter.get('/specialties', async (_req, res) => {
     try {
       const items = await listSpecialties();
       res.json(items);
@@ -269,7 +285,7 @@ export function createExpressApp(): Express {
     }
   });
 
-  app.get('/api/doctors', async (req, res) => {
+  apiRouter.get('/doctors', async (req, res) => {
     try {
       const specialty = typeof req.query.specialty === 'string' ? req.query.specialty : undefined;
       const items = await listDoctors(specialty);
@@ -279,7 +295,7 @@ export function createExpressApp(): Express {
     }
   });
 
-  app.get('/api/doctors/:id', async (req, res) => {
+  apiRouter.get('/doctors/:id', async (req, res) => {
     try {
       const id = Number(req.params.id);
       if (!Number.isFinite(id)) {
@@ -296,7 +312,7 @@ export function createExpressApp(): Express {
   });
 
   // Authenticated Patient Profile
-  app.get('/api/me', requireAuth, async (req: AuthRequest, res) => {
+  apiRouter.get('/me', requireAuth, async (req: AuthRequest, res) => {
     try {
       const uid = req.user!.uid;
       const email = req.user!.email || `${uid}@medislot.local`;
@@ -309,7 +325,7 @@ export function createExpressApp(): Express {
     }
   });
 
-  app.put('/api/me', requireAuth, async (req: AuthRequest, res) => {
+  apiRouter.put('/me', requireAuth, async (req: AuthRequest, res) => {
     try {
       const uid = req.user!.uid;
       const { fullName, phone, insuranceProvider } = req.body || {};
@@ -326,7 +342,7 @@ export function createExpressApp(): Express {
   });
 
   // Authenticated Appointments
-  app.get('/api/appointments', requireAuth, async (req: AuthRequest, res) => {
+  apiRouter.get('/appointments', requireAuth, async (req: AuthRequest, res) => {
     try {
       const uid = req.user!.uid;
       const email = req.user!.email || `${uid}@medislot.local`;
@@ -338,7 +354,7 @@ export function createExpressApp(): Express {
     }
   });
 
-  app.post('/api/appointments', requireAuth, async (req: AuthRequest, res) => {
+  apiRouter.post('/appointments', requireAuth, async (req: AuthRequest, res) => {
     try {
       const uid = req.user!.uid;
       const email = req.user!.email || `${uid}@medislot.local`;
@@ -377,7 +393,7 @@ export function createExpressApp(): Express {
     }
   });
 
-  app.patch('/api/appointments/:id', requireAuth, async (req: AuthRequest, res) => {
+  apiRouter.patch('/appointments/:id', requireAuth, async (req: AuthRequest, res) => {
     try {
       const uid = req.user!.uid;
       const id = Number(req.params.id);
@@ -402,7 +418,7 @@ export function createExpressApp(): Express {
   });
 
   // Authenticated Favorite Doctors
-  app.get('/api/favorites', requireAuth, async (req: AuthRequest, res) => {
+  apiRouter.get('/favorites', requireAuth, async (req: AuthRequest, res) => {
     try {
       const ids = await listFavoriteDoctorIds(req.user!.uid);
       res.json(ids);
@@ -411,7 +427,7 @@ export function createExpressApp(): Express {
     }
   });
 
-  app.post('/api/favorites/:doctorId', requireAuth, async (req: AuthRequest, res) => {
+  apiRouter.post('/favorites/:doctorId', requireAuth, async (req: AuthRequest, res) => {
     try {
       const doctorId = Number(req.params.doctorId);
       if (!Number.isFinite(doctorId)) {
@@ -425,7 +441,7 @@ export function createExpressApp(): Express {
   });
 
   // MediBot AI Concierge
-  app.get('/api/medibot/history', requireAuth, async (req: AuthRequest, res) => {
+  apiRouter.get('/medibot/history', requireAuth, async (req: AuthRequest, res) => {
     try {
       const messages = await listMedibotMessages(req.user!.uid);
       res.json(messages);
@@ -434,7 +450,7 @@ export function createExpressApp(): Express {
     }
   });
 
-  app.delete('/api/medibot/history', requireAuth, async (req: AuthRequest, res) => {
+  apiRouter.delete('/medibot/history', requireAuth, async (req: AuthRequest, res) => {
     try {
       await clearMedibotMessages(req.user!.uid);
       res.json({ cleared: true });
@@ -443,7 +459,7 @@ export function createExpressApp(): Express {
     }
   });
 
-  app.post('/api/medibot/chat', optionalAuth, async (req: AuthRequest, res) => {
+  apiRouter.post('/medibot/chat', optionalAuth, async (req: AuthRequest, res) => {
     try {
       const { message } = req.body || {};
       if (!message || typeof message !== 'string' || !message.trim()) {
@@ -560,6 +576,10 @@ ${catalogContext}`,
       });
     }
   });
+
+  // Mount API router on both /api and root / for seamless Vercel serverless + local dev routing
+  app.use('/api', apiRouter);
+  app.use('/', apiRouter);
 
   return app;
 }
