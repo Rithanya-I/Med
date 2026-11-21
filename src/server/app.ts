@@ -23,6 +23,9 @@ import { createPool, isDbConfigured } from '../db/index.ts';
 import { seedDatabase } from '../db/seed.ts';
 import { isSupabaseConfigured } from '../lib/supabase.ts';
 import { AuthRequest, optionalAuth, requireAuth } from '../middleware/auth.ts';
+import { globalRagEngine } from './ragEngine.ts';
+import { globalVectorStore } from './vectorStore.ts';
+import { DocumentProcessor } from './documentProcessor.ts';
 
 dotenv.config();
 
@@ -212,7 +215,7 @@ function fallbackTriage(message: string, allDoctors: any[], _allSpecialties: any
 
 export function createExpressApp(): Express {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '15mb' }));
 
   // CORS support
   app.use((req, res, next) => {
@@ -508,9 +511,75 @@ export function createExpressApp(): Express {
     }
   });
 
-  apiRouter.post('/medibot/chat', optionalAuth, async (req: AuthRequest, res) => {
+  // --- RAG Document Knowledge Base Endpoints ---
+
+  apiRouter.get('/rag/documents', (_req, res) => {
     try {
-      const { message } = req.body || {};
+      const docs = globalVectorStore.listDocuments();
+      const totalChunks = globalVectorStore.getChunkCount();
+      res.json({
+        documents: docs,
+        totalChunks,
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || 'Failed to retrieve knowledge base documents' });
+    }
+  });
+
+  apiRouter.post('/rag/upload', async (req, res) => {
+    try {
+      const { filename, fileType, contentBase64 } = req.body || {};
+      if (!filename || !contentBase64) {
+        return res.status(400).json({ error: 'Filename and base64 content are required.' });
+      }
+
+      // Process document into text & overlapping chunks
+      const processed = await DocumentProcessor.process(filename, fileType || 'text/plain', contentBase64);
+      if (!processed.chunks || processed.chunks.length === 0) {
+        return res.status(400).json({ error: 'Could not extract any meaningful text chunks from this file.' });
+      }
+
+      // Embed & add to vector store
+      const doc = await globalVectorStore.addDocument(
+        {
+          name: processed.name,
+          fileType: processed.fileType,
+          size: processed.size,
+          description: `User-uploaded document with ${processed.chunks.length} extracted semantic chunks.`,
+        },
+        processed.chunks
+      );
+
+      res.json({
+        success: true,
+        document: doc,
+        chunkCount: processed.chunks.length,
+        extractedLength: processed.text.length,
+      });
+    } catch (error: any) {
+      console.error('RAG document upload error:', error);
+      res.status(500).json({ error: error.message || 'Failed to process and index document' });
+    }
+  });
+
+  apiRouter.delete('/rag/documents/:id', (req, res) => {
+    try {
+      const { id } = req.params;
+      const deleted = globalVectorStore.deleteDocument(id);
+      if (!deleted) {
+        return res.status(404).json({ error: 'Document not found in vector store.' });
+      }
+      res.json({ success: true, deletedId: id });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || 'Failed to delete document' });
+    }
+  });
+
+  // --- RAG Chatbot Endpoint ---
+
+  apiRouter.post('/rag/chat', optionalAuth, async (req: AuthRequest, res) => {
+    try {
+      const { message, history, useWebSearch } = req.body || {};
       if (!message || typeof message !== 'string' || !message.trim()) {
         return res.status(400).json({ error: 'Please enter a message for MediBot.' });
       }
@@ -520,82 +589,13 @@ export function createExpressApp(): Express {
         listSpecialties(),
       ]);
 
-      let parsed: {
-        reply: string;
-        recommendedDoctorId: number;
-        recommendedSlot: string;
-        suggestedSpecialtySlug: string;
-      };
-
-      if (ai) {
-        try {
-          const catalogContext = allDoctors
-            .map(
-              (d) =>
-                `ID:${d.id} | ${d.name} (${d.credentials}) | Specialty: ${d.specialtyName} (${d.specialtySlug}) | Clinic: ${d.clinicName} (${d.distanceMiles}) | Rating: ${d.rating} (${d.reviewCount} reviews) | NextSlot: ${d.nextSlotLabel} | Copay: $${d.insuranceCopay} | Focus: ${d.focusTags}`
-            )
-            .join('\n');
-
-          const specialtyContext = allSpecialties
-            .map((s) => `${s.name} (${s.slug}): ${s.subtitle} — ${s.servicesSummary}`)
-            .join('\n');
-
-          const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: message.trim(),
-            config: {
-              systemInstruction: `You are MediBot, the MediSlot AI scheduling concierge.
-You assist solely with doctor discovery, symptom-to-specialty guidance, calendar matching, and clinic slot booking.
-If a user describes severe emergency symptoms (chest pain radiating to arm, difficulty breathing, stroke signs), immediately advise calling 911.
-Never diagnose diseases; recommend the most relevant medical specialty and doctor from the live clinic catalog below.
-Keep replies warm, concise (2-4 sentences), and actionable.
-
-Available Specialties:
-${specialtyContext}
-
-Available Doctors:
-${catalogContext}`,
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  reply: {
-                    type: Type.STRING,
-                    description: 'Helpful, concise conversational response from MediBot.',
-                  },
-                  recommendedDoctorId: {
-                    type: Type.INTEGER,
-                    description:
-                      'ID of the single best matching doctor from the catalog, or 0 if no specific doctor applies.',
-                  },
-                  recommendedSlot: {
-                    type: Type.STRING,
-                    description: 'Suggested time slot string, e.g. "Today at 2:30 PM" or empty.',
-                  },
-                  suggestedSpecialtySlug: {
-                    type: Type.STRING,
-                    description: 'Matching specialty slug from catalog, e.g. "dermatology" or empty.',
-                  },
-                },
-                required: ['reply', 'recommendedDoctorId', 'recommendedSlot', 'suggestedSpecialtySlug'],
-              },
-            },
-          });
-
-          const rawText = (response.text ?? '{}').trim();
-          parsed = JSON.parse(rawText);
-        } catch (genErr) {
-          console.warn('Gemini inference fallback:', genErr);
-          parsed = fallbackTriage(message, allDoctors, allSpecialties);
-        }
-      } else {
-        parsed = fallbackTriage(message, allDoctors, allSpecialties);
-      }
-
-      const matchedDoctor =
-        parsed.recommendedDoctorId > 0
-          ? allDoctors.find((d) => d.id === parsed.recommendedDoctorId) || null
-          : null;
+      const ragResult = await globalRagEngine.processChat({
+        message: message.trim(),
+        history: Array.isArray(history) ? history : [],
+        useWebSearch: useWebSearch !== false,
+        allDoctors,
+        allSpecialties,
+      });
 
       if (req.user?.uid) {
         await saveMedibotMessage({
@@ -606,17 +606,69 @@ ${catalogContext}`,
         await saveMedibotMessage({
           userUid: req.user.uid,
           role: 'assistant',
-          content: parsed.reply,
-          recommendedDoctorId: matchedDoctor?.id ?? null,
-          recommendedSlot: parsed.recommendedSlot || matchedDoctor?.nextSlotLabel || null,
+          content: ragResult.reply,
+          recommendedDoctorId: ragResult.recommendedDoctor?.id ?? null,
+          recommendedSlot: ragResult.recommendedSlot || ragResult.recommendedDoctor?.nextSlotLabel || null,
         });
       }
 
       res.json({
-        reply: parsed.reply,
-        recommendedDoctor: matchedDoctor,
-        recommendedSlot: parsed.recommendedSlot || matchedDoctor?.nextSlotLabel || '',
-        suggestedSpecialtySlug: parsed.suggestedSpecialtySlug || '',
+        reply: ragResult.reply,
+        sources: ragResult.sources,
+        recommendedDoctor: ragResult.recommendedDoctor,
+        recommendedSlot: ragResult.recommendedSlot,
+        suggestedSpecialtySlug: ragResult.suggestedSpecialtySlug,
+      });
+    } catch (error: any) {
+      console.error('RAG Chat endpoint error:', error);
+      res.status(500).json({
+        error: error?.message || 'MediBot encountered an error in the RAG retrieval engine.',
+      });
+    }
+  });
+
+  // Backward-compatible alias for existing callers
+  apiRouter.post('/medibot/chat', optionalAuth, async (req: AuthRequest, res) => {
+    try {
+      const { message, history, useWebSearch } = req.body || {};
+      if (!message || typeof message !== 'string' || !message.trim()) {
+        return res.status(400).json({ error: 'Please enter a message for MediBot.' });
+      }
+
+      const [allDoctors, allSpecialties] = await Promise.all([
+        listDoctors(),
+        listSpecialties(),
+      ]);
+
+      const ragResult = await globalRagEngine.processChat({
+        message: message.trim(),
+        history: Array.isArray(history) ? history : [],
+        useWebSearch: useWebSearch !== false,
+        allDoctors,
+        allSpecialties,
+      });
+
+      if (req.user?.uid) {
+        await saveMedibotMessage({
+          userUid: req.user.uid,
+          role: 'user',
+          content: message.trim(),
+        });
+        await saveMedibotMessage({
+          userUid: req.user.uid,
+          role: 'assistant',
+          content: ragResult.reply,
+          recommendedDoctorId: ragResult.recommendedDoctor?.id ?? null,
+          recommendedSlot: ragResult.recommendedSlot || ragResult.recommendedDoctor?.nextSlotLabel || null,
+        });
+      }
+
+      res.json({
+        reply: ragResult.reply,
+        sources: ragResult.sources,
+        recommendedDoctor: ragResult.recommendedDoctor,
+        recommendedSlot: ragResult.recommendedSlot,
+        suggestedSpecialtySlug: ragResult.suggestedSpecialtySlug,
       });
     } catch (error: any) {
       console.error('MediBot AI error:', error);

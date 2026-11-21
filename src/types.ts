@@ -79,6 +79,14 @@ export interface Appointment {
   doctorReviewCount: number;
 }
 
+export interface ChatSource {
+  type: 'document' | 'web';
+  title: string;
+  snippet: string;
+  url?: string;
+  score?: number;
+}
+
 export interface MediBotChatEntry {
   id: string;
   role: 'user' | 'assistant';
@@ -87,6 +95,7 @@ export interface MediBotChatEntry {
   recommendedDoctor?: Doctor | null;
   recommendedSlot?: string;
   suggestedSpecialtySlug?: string;
+  sources?: ChatSource[];
 }
 
 export interface BookingDraft {
