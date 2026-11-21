@@ -144,6 +144,10 @@ export async function updateUserProfile(
 }
 
 export async function listSpecialties() {
+  if (!isDbConfigured) {
+    return FALLBACK_SPECIALTIES;
+  }
+
   try {
     const items = await db
       .select()
@@ -153,18 +157,15 @@ export async function listSpecialties() {
       return items;
     }
     // If table exists but is empty, try seeding once if DB is configured
-    if (isDbConfigured) {
-      try {
-        await db.insert(specialties).values(INITIAL_SPECIALTIES);
-        return await db
-          .select()
-          .from(specialties)
-          .orderBy(desc(specialties.featured), asc(specialties.id));
-      } catch {
-        // Fall through to fallback
-      }
+    try {
+      await db.insert(specialties).values(INITIAL_SPECIALTIES);
+      return await db
+        .select()
+        .from(specialties)
+        .orderBy(desc(specialties.featured), asc(specialties.id));
+    } catch {
+      return FALLBACK_SPECIALTIES;
     }
-    return FALLBACK_SPECIALTIES;
   } catch (error) {
     console.warn(
       '[Supabase DB] Could not query specialties table. Using fallback catalog until migrations are applied:',
@@ -175,6 +176,13 @@ export async function listSpecialties() {
 }
 
 export async function listDoctors(specialtySlug?: string) {
+  if (!isDbConfigured) {
+    if (specialtySlug && specialtySlug !== 'all') {
+      return FALLBACK_DOCTORS.filter((d) => d.specialtySlug === specialtySlug);
+    }
+    return FALLBACK_DOCTORS;
+  }
+
   try {
     let items;
     if (specialtySlug && specialtySlug !== 'all') {
@@ -195,13 +203,11 @@ export async function listDoctors(specialtySlug?: string) {
     }
 
     // If table exists but is empty, try seeding once if DB is configured
-    if (isDbConfigured) {
-      try {
-        await db.insert(doctors).values(INITIAL_DOCTORS);
-        return await listDoctors(specialtySlug);
-      } catch {
-        // Fall through to fallback
-      }
+    try {
+      await db.insert(doctors).values(INITIAL_DOCTORS);
+      return await listDoctors(specialtySlug);
+    } catch {
+      // Fall through to fallback
     }
 
     if (specialtySlug && specialtySlug !== 'all') {
@@ -221,6 +227,10 @@ export async function listDoctors(specialtySlug?: string) {
 }
 
 export async function getDoctorById(doctorId: number) {
+  if (!isDbConfigured) {
+    return FALLBACK_DOCTORS.find((d) => d.id === doctorId) || null;
+  }
+
   try {
     const rows = await db.select().from(doctors).where(eq(doctors.id, doctorId));
     if (rows[0]) return rows[0];
