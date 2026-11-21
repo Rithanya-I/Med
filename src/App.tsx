@@ -17,6 +17,7 @@ import { ReviewBookingScreen } from './screens/ReviewBookingScreen';
 import { ScheduleScreen } from './screens/ScheduleScreen';
 import { SpecialtiesScreen } from './screens/SpecialtiesScreen';
 import { WelcomePortalScreen } from './screens/WelcomePortalScreen';
+import { FloatingChatbot } from './components/FloatingChatbot';
 import { Appointment, BookingDraft, Doctor, ScreenRoute, Specialty } from './types';
 
 function MediSlotShell() {
@@ -447,6 +448,15 @@ function MediSlotShell() {
           />
         )}
       </main>
+
+      {/* Omnipresent Floating MediBot AI Chatbot */}
+      {currentRoute !== 'medibot' && (
+        <FloatingChatbot
+          doctors={doctors}
+          onSelectDoctor={handleSelectDoctor}
+          onReserveDoctorSlot={handleStartBooking}
+        />
+      )}
 
       {isTabScreen && (
         <MobileBottomNav activeRoute={currentRoute} onNavigate={navigate} />

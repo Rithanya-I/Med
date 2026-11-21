@@ -47,6 +47,55 @@ const ai = isGeminiKeyValid
 function fallbackTriage(message: string, allDoctors: any[], _allSpecialties: any[]) {
   const lower = message.toLowerCase();
 
+  // 1. Direct doctor name matching
+  for (const doc of allDoctors) {
+    const lastName = doc.name.split(' ').slice(-1)[0].toLowerCase();
+    const firstName = doc.name.split(' ')[1]?.toLowerCase();
+    if (lower.includes(lastName) || (firstName && lower.includes(firstName))) {
+      return {
+        reply: `${doc.name} is our ${doc.title} (${doc.credentials}) at ${doc.clinicName}. Rated ${doc.rating}★ over ${doc.reviewCount} verified reviews with a ${doc.satisfactionRate} satisfaction rate. Consultation fee is $${doc.consultationFee} ($${doc.insuranceCopay} insurance copay). Next opening: ${doc.nextSlotLabel}.`,
+        recommendedDoctorId: doc.id,
+        recommendedSlot: doc.nextSlotLabel,
+        suggestedSpecialtySlug: doc.specialtySlug,
+      };
+    }
+  }
+
+  // 2. Fees, copay, insurance questions
+  if (lower.includes('copay') || lower.includes('fee') || lower.includes('cost') || lower.includes('insurance') || lower.includes('price')) {
+    const doc = allDoctors[0];
+    return {
+      reply:
+        'All MediSlot specialist visits are covered under standard in-network health plans (Aetna, BlueCross, UnitedHealthcare). Typical insurance copays range from $20 to $45, while self-pay transparent consultation fees range from $140 to $260. Which specialty or doctor would you like to verify?',
+      recommendedDoctorId: doc?.id || 1,
+      recommendedSlot: doc?.nextSlotLabel || 'Today, 2:30 PM',
+      suggestedSpecialtySlug: doc?.specialtySlug || 'dermatology',
+    };
+  }
+
+  // 3. Open slots today
+  if (lower.includes('today') || lower.includes('now') || lower.includes('open slot') || lower.includes('available today')) {
+    const todayDoc = allDoctors.find((d) => d.nextSlotLabel.toLowerCase().includes('today')) || allDoctors[0];
+    return {
+      reply: `We currently have same-day clinical openings available today! For example, ${todayDoc.name} (${todayDoc.specialtyName}) has an open consultation slot at ${todayDoc.nextSlotLabel}. Would you like to reserve this slot?`,
+      recommendedDoctorId: todayDoc.id,
+      recommendedSlot: todayDoc.nextSlotLabel,
+      suggestedSpecialtySlug: todayDoc.specialtySlug,
+    };
+  }
+
+  // 4. Mental Health & Psychiatry
+  if (lower.includes('anxiety') || lower.includes('depress') || lower.includes('psychiat') || lower.includes('mental') || lower.includes('stress') || lower.includes('therapy')) {
+    const doc = allDoctors.find((d) => d.specialtySlug === 'psychiatry') || allDoctors.find((d) => d.specialtySlug === 'neurology') || allDoctors[0];
+    return {
+      reply:
+        'For stress, anxiety, mood support, or behavioral therapy, our compassionate clinical team is here for you. We provide confidential consultations with holistic care plans.',
+      recommendedDoctorId: doc?.id || 6,
+      recommendedSlot: doc?.nextSlotLabel || 'Tomorrow, 3:00 PM',
+      suggestedSpecialtySlug: 'psychiatry',
+    };
+  }
+
   if (
     lower.includes('chest') ||
     lower.includes('heart') ||
